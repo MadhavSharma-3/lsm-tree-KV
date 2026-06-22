@@ -56,3 +56,19 @@ void WAL::append(OpType type, const string& key, const string& value) {
 
     // The closing brace destroys `lock`. The file is released for the next thread.
 }
+
+
+void WAL:: clear(){
+    lock_guard<mutex> lock(wal_mutex); 
+
+    if (log_file.is_open()){
+        log_file.close(); 
+    }
+ 
+    // / 2. Reopen with ios::trunc. 
+    // This is the OS-level command to instantly truncate the file back to 0 bytes.
+    log_file.open(file_path, ios::out | ios::binary | ios::trunc); 
+    log_file.close(); 
+    
+    log_file.open(file_path, ios::app | ios::binary);
+}

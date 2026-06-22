@@ -1,11 +1,36 @@
 #include "../include/db.h"
+#include <fstream> 
+#include <iostream> 
 
 using namespace std;
 
-void DB::recover(const string& wal_path){
-    ifstream log_file(wal_path, ios::binary);
+DB::DB(const string& db_directory): db_dir(db_directory) {
+    // Initialize the underlying data structures
+    memtable = make_unique<Skiplist>(16, 0.5f);
+    wal = make_unique<WAL>(db_dir + "/wal.bin");
+
+    memtable_size = 0; 
+    sstable_ct = 0; 
+
+    while(true){
+        string ss_path = db_dir + "/sstable" + to_string(sstable_ct) + ".bin"; 
+        ifstream check(ss_path); 
+        if (!check.good()) break ; 
+        check.close(); 
+
+        sstables.push_back(make_unique<SSTable>(ss_path));
+        sstable_ct++;
+    }
+
+    // for the last record recover state after a crash.
+    recover(); 
+}
+
+
+void DB::recover(){
+    ifstream log_file(db_dir + "/wal.bin", ios::binary);
     
-    // If the file doesn't exist, this is a fresh database. Do nothing.
+    // If the file doesn't exist, this is a fresh database. 
     if (!log_file.is_open()) {
         return; 
     }
@@ -13,7 +38,7 @@ void DB::recover(const string& wal_path){
     // peek() looks at the next byte without extracting it. 
     // This safely checks for EOF before attempting a read.
     while (log_file.peek() != EOF) {
-        
+
         // 1. Read 1 byte for OpType
         char op_char;
         log_file.read(&op_char, sizeof(char));
@@ -37,35 +62,44 @@ void DB::recover(const string& wal_path){
 
         // 6. Rebuild the MemTable state
         if (op == OpType::PUT) {
-            memtable->insert(key, val);
+            memtable->insert(key, val); 
+            memtable_size += key.size() + val.size() + 32; 
         } else if (op == OpType::DELETE) {
-            memtable->remove(key);
+            if (memtable->remove(key)) 
+                memtable_size -= key.size() + val.size() + 32; 
         }
     }
 }
 
-DB::DB(const string& wal_path) {
-    // Initialize the underlying data structures
-    memtable = make_unique<Skiplist>(16, 0.5f);
-    wal = make_unique<WAL>(wal_path);
 
-    // TODO in Phase 2: Read the WAL file here and call memtable->insert() 
-    // for every record to recover state after a crash.
-    recover(wal_path); 
+void DB:: flush_and_reset(){
+    string ss_path = db_dir + "/sstable" + to_string(sstable_ct) + ".bin"; 
 
-    
+    SSTable:: flush_memtable_to_disk(memtable.get(), ss_path); 
+    sstables.push_back(make_unique<SSTable> (ss_path)); 
+    sstable_ct++; 
+
+    memtable_size = 0; 
+
+    // empty the current wal
+    // wal-> clear(); 
 }
+
 
 void DB::put(const string& key, const string& value) {
     // 1. Acquire EXCLUSIVE Write Lock.
     // No other thread can read or write until this is done.
     unique_lock<shared_mutex> lock(db_mutex);
 
-    // 2. Guarantee Durability First
-    wal->append(OpType::PUT, key, value);
+    if (memtable_size > MEMTABLE_LIMIT){
+        flush_and_reset(); 
+    }
 
-    // 3. Update In-Memory State
+    wal->append(OpType::PUT, key, value);
     memtable->insert(key, value);
+    
+    // change the memtable size
+    memtable_size += sizeof(key) + sizeof(value) + 32; 
 }
 
 bool DB::get(const string& key, string& out_value) {
@@ -73,24 +107,35 @@ bool DB::get(const string& key, string& out_value) {
     // Multiple threads can hold this lock simultaneously.
     // But if a thread holds a unique_lock (Write), this will block and wait.
     shared_lock<shared_mutex> lock(db_mutex);
+    
+    // fetch the get request
+    if (memtable -> search (key, out_value)){
+        return true; 
+    }
 
-    // 2. Fetch from memory
-    return memtable->search(key, out_value);
+    for(int i = sstable_ct-1; i >= 0; i--){
+        if (sstables[i] -> get(key, out_value)) return true; 
+    }
+
+    return false;  
 }
 
 bool DB::remove(const string& key) {
     // 1. Acquire EXCLUSIVE Write Lock.
     unique_lock<shared_mutex> lock(db_mutex);
-
+    
     // 2. Check if it actually exists in memory before appending a useless delete log
     string temp;
     if (!memtable->search(key, temp)) {
         return false;
     }
-
+    
     // 3. Guarantee Durability of Deletion
-    wal->append(OpType::DELETE, key, "");
-
-    // 4. Erase from Memory
-    return memtable->remove(key);
+    wal->append(OpType::DELETE, key, temp);
+    if (memtable -> remove(key)){
+        memtable_size -= key.size() + temp.size() + 32; 
+        return true; 
+    }
+    
+    return false; 
 }
