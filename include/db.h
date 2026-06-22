@@ -22,4 +22,5 @@ public:
     void put(const std::string& key, const std::string& value);
     bool get(const std::string& key, std::string& out_value);
     bool remove(const std::string& key);
+    void recover(const string& wal_path); 
 };
