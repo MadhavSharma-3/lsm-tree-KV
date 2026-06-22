@@ -21,11 +21,12 @@ private:
     float probability;
     int current_level;
     
-    Node* head;
-
+    
     int randomLevel();
-
+    
 public:
+    Node* head;
+    
     Skiplist(int max_lvl = 16, float prob = 0.5f);
     ~Skiplist(); 
 

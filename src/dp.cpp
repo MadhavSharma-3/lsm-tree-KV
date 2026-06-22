@@ -52,6 +52,8 @@ DB::DB(const string& wal_path) {
     // TODO in Phase 2: Read the WAL file here and call memtable->insert() 
     // for every record to recover state after a crash.
     recover(wal_path); 
+
+    
 }
 
 void DB::put(const string& key, const string& value) {
