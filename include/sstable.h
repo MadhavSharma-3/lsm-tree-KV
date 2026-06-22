@@ -2,6 +2,7 @@
 #include <string>
 #include <vector>
 #include <fstream>
+#include <mutex> 
 #include <cstdint>
 
 // Forward declaration to avoid circular header dependencies.
@@ -20,6 +21,7 @@ private:
     std::ifstream table_file;
     
     // The RAM-resident map. A 4MB file might only have a 40KB index.
+    std::mutex file_mutex;
     std::vector<IndexEntry> sparse_index;
 
     // Internal helper. Called strictly during initialization to rip the index 

@@ -4,9 +4,10 @@
 
 using namespace std;
 
+
 DB::DB(const string& db_directory): db_dir(db_directory) {
     // Initialize the underlying data structures
-    memtable = make_unique<Skiplist>(16, 0.5f);
+    memtable = make_unique<Skiplist>(16, 0.75f);
     wal = make_unique<WAL>(db_dir + "/wal.bin");
 
     memtable_size = 0; 
@@ -41,48 +42,47 @@ void DB::recover(){
 
         // 1. Read 1 byte for OpType
         char op_char;
-        log_file.read(&op_char, sizeof(char));
+        if (!log_file.read(&op_char, sizeof(char))) break;
         OpType op = static_cast<OpType>(op_char);
 
         // 2. Read 4 bytes directly into the memory address of key_len
         uint32_t key_len;
-        log_file.read(reinterpret_cast<char*>(&key_len), sizeof(uint32_t));
+        if (!log_file.read(reinterpret_cast<char*>(&key_len), sizeof(uint32_t))) break;
 
         // 3. Pre-allocate string memory, then dump bytes directly into it
         string key(key_len, '\0');
-        log_file.read(&key[0], key_len);
+        if (!log_file.read(&key[0], key_len)) break;
 
         // 4. Read 4 bytes for val_len
         uint32_t val_len;
-        log_file.read(reinterpret_cast<char*>(&val_len), sizeof(uint32_t));
+        if (!log_file.read(reinterpret_cast<char*>(&val_len), sizeof(uint32_t))) break;
 
         // 5. Pre-allocate string memory, dump value bytes
         string val(val_len, '\0');
-        log_file.read(&val[0], val_len);
+        if (!log_file.read(&val[0], val_len)) break;
 
         // 6. Rebuild the MemTable state
-        if (op == OpType::PUT) {
+        if (op == OpType::PUT || op == OpType::DELETE) {
             memtable->insert(key, val); 
             memtable_size += key.size() + val.size() + 32; 
-        } else if (op == OpType::DELETE) {
-            if (memtable->remove(key)) 
-                memtable_size -= key.size() + val.size() + 32; 
         }
     }
 }
 
 
-void DB:: flush_and_reset(){
+void DB::flush_and_reset(){
     string ss_path = db_dir + "/sstable" + to_string(sstable_ct) + ".bin"; 
 
-    SSTable:: flush_memtable_to_disk(memtable.get(), ss_path); 
-    sstables.push_back(make_unique<SSTable> (ss_path)); 
+    SSTable::flush_memtable_to_disk(memtable.get(), ss_path); 
+    sstables.push_back(make_unique<SSTable>(ss_path)); 
     sstable_ct++; 
 
+    // FIX: Actually allocate a new SkipList to drop the old RAM payload
+    memtable = make_unique<Skiplist>(16, 0.75f);
     memtable_size = 0; 
 
     // empty the current wal
-    // wal-> clear(); 
+    wal->clear(); 
 }
 
 
@@ -99,8 +99,9 @@ void DB::put(const string& key, const string& value) {
     memtable->insert(key, value);
     
     // change the memtable size
-    memtable_size += sizeof(key) + sizeof(value) + 32; 
+    memtable_size += key.size() + value.size() + 32; 
 }
+
 
 bool DB::get(const string& key, string& out_value) {
     // 1. Acquire SHARED Read Lock.
@@ -109,12 +110,14 @@ bool DB::get(const string& key, string& out_value) {
     shared_lock<shared_mutex> lock(db_mutex);
     
     // fetch the get request
-    if (memtable -> search (key, out_value)){
-        return true; 
+    if (memtable->search(key, out_value)){
+        return out_value != "<TOMBSTONE>"; 
     }
 
     for(int i = sstable_ct-1; i >= 0; i--){
-        if (sstables[i] -> get(key, out_value)) return true; 
+        if (sstables[i]->get(key, out_value)) {
+            return out_value != "<TOMBSTONE>";
+        }
     }
 
     return false;  
@@ -126,16 +129,17 @@ bool DB::remove(const string& key) {
     
     // 2. Check if it actually exists in memory before appending a useless delete log
     string temp;
-    if (!memtable->search(key, temp)) {
-        return false;
+    
+    // FIX: A key might exist on disk but not in RAM. Bypassing deletion here is an error.
+    // We must unconditionally append the TOMBSTONE to override any potential disk records.
+    if (memtable_size > MEMTABLE_LIMIT){
+        flush_and_reset(); 
     }
     
     // 3. Guarantee Durability of Deletion
-    wal->append(OpType::DELETE, key, temp);
-    if (memtable -> remove(key)){
-        memtable_size -= key.size() + temp.size() + 32; 
-        return true; 
-    }
+    wal->append(OpType::DELETE, key, "<TOMBSTONE>");
+    memtable->insert(key, "<TOMBSTONE>");
+    memtable_size += key.size() + 11 + 32; // 11 is the size of "<TOMBSTONE>"
     
-    return false; 
+    return true; 
 }

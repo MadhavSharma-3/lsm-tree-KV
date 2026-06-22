@@ -1,0 +1,26 @@
+CMake and Build Artifacts
+
+build/
+CMakeCache.txt
+CMakeFiles/
+Makefile
+cmake_install.cmake
+
+Visual Studio / IDE
+
+.vscode/
+*.vcxproj
+*.sln
+*.dir/
+
+Database Data Directories and Binary Logs
+
+data/
+bench_data*/
+*.bin
+
+Executables
+
+*.exe
+strata_cli
+db_bench

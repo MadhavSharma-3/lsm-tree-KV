@@ -2,6 +2,7 @@
 #include "../include/skiplist.h"
 #include <iostream>
 #include <algorithm>
+// #include <mutex> 
 
 // seekg : changes the reading pt. (seek get) 
 // tellg : tells the reading point.  (tell get) 
@@ -29,13 +30,13 @@ void SSTable:: load_index(){
 // its like [key_len][key][offset] with keylen, offset 4byte words
     while(table_file.tellg() < eof_pos - 4){
         uint32_t key_len; 
-        table_file.read(reinterpret_cast<char*>(&key_len), sizeof(uint32_t)); 
+        if (!table_file.read(reinterpret_cast<char*>(&key_len), sizeof(uint32_t))) break; 
 
         string key(key_len,'\0'); 
-        table_file.read(&key[0], key_len); 
+        if(!table_file.read(&key[0], key_len)) break; 
 
         uint32_t offset; 
-        table_file.read(reinterpret_cast<char*>(&offset), sizeof(uint32_t)); 
+        if (!table_file.read(reinterpret_cast<char*>(&offset), sizeof(uint32_t)) ) break; 
 
         sparse_index.push_back({key, offset}); 
     }
@@ -75,20 +76,24 @@ bool SSTable:: get(const string& target_key, string& out_value){
     if (it == sparse_index.end()) return false;
 
 
-    table_file.seekg(it->offset, ios::beg);         
+    std::lock_guard<std::mutex> lock(file_mutex);
+// Clear any lingering error/EOF flags from previous thread operations
+    table_file.clear(); 
+    table_file.seekg(it->offset, ios::beg);       
+
     // iterate over the file until we hit that key 
     while(true){
         uint32_t key_len; 
         if (!table_file.read(reinterpret_cast<char*>(&key_len), sizeof(uint32_t))) return false; 
 
         string key(key_len,'\0'); 
-        table_file.read(&key[0], key_len); 
+        if (!table_file.read(&key[0], key_len)) return false; 
 
         uint32_t val_len;  
-        table_file.read(reinterpret_cast<char*>(&val_len), sizeof(uint32_t)); 
+        if (!table_file.read(reinterpret_cast<char*>(&val_len), sizeof(uint32_t))) return false;
 
         string val(val_len, '\0'); 
-        table_file.read(&val[0], val_len); 
+        if (!table_file.read(&val[0], val_len)) return false; 
 
         if (key == target_key){
             out_value = val ;
@@ -97,6 +102,8 @@ bool SSTable:: get(const string& target_key, string& out_value){
             return false; 
         }
     }
+    
+    return false; 
 }; 
 
 
