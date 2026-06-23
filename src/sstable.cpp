@@ -161,3 +161,55 @@ void SSTable::flush_memtable_to_disk(Skiplist* memtable, const string& output_pa
     out.flush();
     out.close();
 }
+
+
+
+
+
+// ============================================================================
+// SSTABLE ITERATOR IMPLEMENTATION 
+// ============================================================================
+
+SSTableIterator::SSTableIterator(const string& path) {
+    stream.open(path, ios::binary);
+    if (!stream.is_open()) return;
+
+    // We must stop reading sequential data the exact byte the Sparse Index starts.
+    // The offset of the sparse index is stored in the last 4 bytes of the file.
+    stream.seekg(-4, ios::end);
+    stream.read(reinterpret_cast<char*>(&data_end_offset), sizeof(uint32_t));
+    
+    // Reset the disk head to byte 0 to begin sequential reads.
+    stream.seekg(0, ios::beg);
+}
+
+SSTableIterator::~SSTableIterator() {
+    if (stream.is_open()) {
+        stream.close();
+    }
+}
+
+bool SSTableIterator::has_next() {
+    if (!stream.is_open()) return false;
+    // If our current position is less than the byte where the index begins, we have data.
+    return stream.tellg() < data_end_offset;
+}
+
+bool SSTableIterator::next(string& out_key, string& out_val) {
+    if (!has_next()) return false;
+
+    // Strict boundaries. If a read fails, the disk file is corrupted or truncated.
+    uint32_t key_len;
+    if (!stream.read(reinterpret_cast<char*>(&key_len), sizeof(uint32_t))) return false;
+
+    out_key.resize(key_len);
+    if (!stream.read(&out_key[0], key_len)) return false;
+
+    uint32_t val_len;
+    if (!stream.read(reinterpret_cast<char*>(&val_len), sizeof(uint32_t))) return false;
+
+    out_val.resize(val_len);
+    if (!stream.read(&out_val[0], val_len)) return false;
+
+    return true;
+}

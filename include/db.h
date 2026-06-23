@@ -23,9 +23,11 @@ private:
     size_t memtable_size;
     int sstable_ct; // Used to name files: sstable_1.bin, sstable_2.bin
     std:: string db_dir; 
-
+    
+    // Internal Mechanics (Hidden from the user)
     void flush_and_reset();
     void recover(); 
+    void compact(); 
 
 public:
     DB(const std::string& db_directory);

@@ -1,9 +1,11 @@
 #include "../include/db.h"
-#include <fstream> 
-#include <iostream> 
+#include <iostream>
+#include <queue> 
+#include <filesystem> 
+#include <fstream> // REQUIRED FOR FILE I/O
 
 using namespace std;
-
+namespace fs = std::filesystem;
 
 DB::DB(const string& db_directory): db_dir(db_directory) {
     // Initialize the underlying data structures
@@ -14,7 +16,8 @@ DB::DB(const string& db_directory): db_dir(db_directory) {
     sstable_ct = 0; 
 
     while(true){
-        string ss_path = db_dir + "/sstable" + to_string(sstable_ct) + ".bin"; 
+        // FIXED: Added missing underscore to match compaction logic
+        string ss_path = db_dir + "/sstable_" + to_string(sstable_ct) + ".bin"; 
         ifstream check(ss_path); 
         if (!check.good()) break ; 
         check.close(); 
@@ -71,7 +74,8 @@ void DB::recover(){
 
 
 void DB::flush_and_reset(){
-    string ss_path = db_dir + "/sstable" + to_string(sstable_ct) + ".bin"; 
+    // FIXED: Added missing underscore
+    string ss_path = db_dir + "/sstable_" + to_string(sstable_ct) + ".bin"; 
 
     SSTable::flush_memtable_to_disk(memtable.get(), ss_path); 
     sstables.push_back(make_unique<SSTable>(ss_path)); 
@@ -83,6 +87,11 @@ void DB::flush_and_reset(){
 
     // empty the current wal
     wal->clear(); 
+
+    // The GC Trigger Mechanism
+    if (sstable_ct >= 4) {
+        compact();
+    }
 }
 
 
@@ -142,4 +151,129 @@ bool DB::remove(const string& key) {
     memtable_size += key.size() + 11 + 32; // 11 is the size of "<TOMBSTONE>"
     
     return true; 
+}
+
+
+
+
+// A wrapper to help the priority queue keep track of which file a key came from
+struct MergeNode {
+    string key;
+    string value;
+    int sstable_index;
+
+    // std::priority_queue is a max-heap. 
+    // We invert the operators so the smallest string sits at the top (Min-Heap).
+    // CRITICAL: If keys are identical, we force the HIGHER sstable_index (newer data) to the top.
+    bool operator<(const MergeNode& other) const {
+        if (key == other.key) {
+            return sstable_index < other.sstable_index; 
+        }
+        return key > other.key; 
+    }
+};
+
+
+
+// garbage collector to skim files if sstable_ct >= 4 .
+
+void DB::compact() {
+    if (sstables.size() <= 1) return;
+    
+// In a production engine, this runs on a detached thread.
+// For structural correctness, we run it synchronously under the write lock.
+    cout << "\n[Compaction] Merging " << sstables.size() << " fragmented SSTables. " << endl;
+
+    vector<unique_ptr<SSTableIterator>> iterators;
+    for (int i = 0; i < sstable_ct; i++) {
+        iterators.push_back(make_unique<SSTableIterator>(db_dir + "/sstable_" + to_string(i) + ".bin"));
+    }
+
+    priority_queue<MergeNode> heap;
+
+// Seed the heap with the first element of each file
+    for (int i = 0; i < iterators.size(); i++) {
+        string k, v;
+        if (iterators[i]->next(k, v)) {
+            heap.push({k, v, i});
+        }
+    }
+
+    string compacted_path = db_dir + "/compacted.bin";
+    ofstream out(compacted_path, ios::binary);
+    
+// the compacted sparse table 
+    vector<IndexEntry> temp_index;
+    uint32_t bytes_written = 0;
+    const uint32_t INDEX_INTERVAL = 4096;
+    string last_key = "";
+
+    while (!heap.empty()) {
+        MergeNode current = heap.top();
+        heap.pop();
+
+        // Immediately pull the next sequential item from the file that just won
+        string next_k, next_v;
+        if (iterators[current.sstable_index]->next(next_k, next_v)) {
+            heap.push({next_k, next_v, current.sstable_index});
+        }
+
+        // Conflict Resolution: If this key matches the last processed key, it is an older version.
+        // The heap already fed us the newest version first. Drop this obsolete duplicate.
+// we only need one last key because we are processing the whole thing in sorted order. 
+        if (current.key == last_key) {
+            continue;
+        }
+        last_key = current.key;
+
+        // Garbage Collection: If the reigning version of this key is a Tombstone, 
+        // it means the key is deleted. Drop it completely to reclaim disk space.
+        if (current.value == "<TOMBSTONE>") {
+            continue;
+        }
+
+        // Write winning key-value pair to the dense new file
+        uint32_t current_offset = out.tellp();
+        if (temp_index.empty() || bytes_written >= INDEX_INTERVAL) {
+            temp_index.push_back({current.key, current_offset});
+            bytes_written = 0;
+        }
+
+        uint32_t key_len = current.key.size();
+        uint32_t val_len = current.value.size();
+
+        out.write(reinterpret_cast<const char*>(&key_len), sizeof(uint32_t));
+        out.write(current.key.c_str(), key_len);
+        out.write(reinterpret_cast<const char*>(&val_len), sizeof(uint32_t));
+        out.write(current.value.c_str(), val_len);
+
+        bytes_written += (sizeof(uint32_t) * 2) + key_len + val_len;
+    }
+
+// Append the sparse index.
+    uint32_t index_start_offset = out.tellp();
+    for (const auto& entry : temp_index) {
+        uint32_t key_len = entry.key.size();
+        out.write(reinterpret_cast<const char*>(&key_len), sizeof(uint32_t));
+        out.write(entry.key.c_str(), key_len);
+        out.write(reinterpret_cast<const char*>(&entry.offset), sizeof(uint32_t));
+    }
+// Append the offset of sparse index. 
+    out.write(reinterpret_cast<const char*>(&index_start_offset), sizeof(uint32_t));
+    out.flush();
+    out.close();
+
+    // The Atomic Swap: Release memory handles, destroy old fragments, map the new file
+    sstables.clear();
+    iterators.clear();
+
+    for (int i = 0; i < sstable_ct; i++) {
+        fs::remove(db_dir + "/sstable_" + to_string(i) + ".bin");
+    }
+
+    fs::rename(compacted_path, db_dir + "/sstable_0.bin");
+    sstable_ct = 1;
+    sstables.push_back(make_unique<SSTable>(db_dir + "/sstable_0.bin"));
+    
+    cout << "[Compaction] Complete. Deleted keys dropped. Disk space reclaimed." << endl;
 }
