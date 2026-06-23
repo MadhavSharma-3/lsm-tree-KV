@@ -184,6 +184,16 @@ void DB::compact() {
 // For structural correctness, we run it synchronously under the write lock.
     cout << "\n[Compaction] Merging " << sstables.size() << " fragmented SSTables. " << endl;
 
+
+// --- PHASE 4 FIX: Precise Bloom Filter Sizing via Trailer Metadata ---
+    // Extract exact physical entry counts from the target SSTable trailers.
+    // This perfectly caps the Bloom Filter RAM allocation without heuristic guesswork.
+    uint32_t exact_max_keys = 0;
+    for (int i = 0; i < sstable_ct; i++) {
+        exact_max_keys += sstables[i]->get_entry_count();
+    }
+
+
     vector<unique_ptr<SSTableIterator>> iterators;
     for (int i = 0; i < sstable_ct; i++) {
         iterators.push_back(make_unique<SSTableIterator>(db_dir + "/sstable_" + to_string(i) + ".bin"));
@@ -204,9 +214,14 @@ void DB::compact() {
     
 // the compacted sparse table 
     vector<IndexEntry> temp_index;
+    BloomFilter temp_filter(exact_max_keys, 0.01); // Allocate precisely based on metadata
+
+
+    uint32_t compacted_entry_count = 0; // Track unique keys written to the dense file
     uint32_t bytes_written = 0;
     const uint32_t INDEX_INTERVAL = 4096;
     string last_key = "";
+
 
     while (!heap.empty()) {
         MergeNode current = heap.top();
@@ -232,12 +247,16 @@ void DB::compact() {
             continue;
         }
 
+        compacted_entry_count++;
+
         // Write winning key-value pair to the dense new file
         uint32_t current_offset = out.tellp();
         if (temp_index.empty() || bytes_written >= INDEX_INTERVAL) {
             temp_index.push_back({current.key, current_offset});
             bytes_written = 0;
         }
+
+        temp_filter.add(current.key); // Ensure compacted keys hit the filter
 
         uint32_t key_len = current.key.size();
         uint32_t val_len = current.value.size();
@@ -258,8 +277,26 @@ void DB::compact() {
         out.write(entry.key.c_str(), key_len);
         out.write(reinterpret_cast<const char*>(&entry.offset), sizeof(uint32_t));
     }
-// Append the offset of sparse index. 
+
+
+// Append Bloom Filter Data
+    uint32_t bloom_start_offset = out.tellp();
+    uint32_t bits = temp_filter.get_num_bits();
+    uint32_t hashes = temp_filter.get_num_hashes();
+    const auto& raw_data = temp_filter.get_raw_data();
+    uint32_t data_size = raw_data.size();
+
+    out.write(reinterpret_cast<const char*>(&bits), sizeof(uint32_t));
+    out.write(reinterpret_cast<const char*>(&hashes), sizeof(uint32_t));
+    out.write(reinterpret_cast<const char*>(&data_size), sizeof(uint32_t));
+    out.write(reinterpret_cast<const char*>(raw_data.data()), data_size);
+
+
+// Append the offset of 12 bytes 
+    out.write(reinterpret_cast<const char*>(&bloom_start_offset), sizeof(uint32_t));
     out.write(reinterpret_cast<const char*>(&index_start_offset), sizeof(uint32_t));
+    out.write(reinterpret_cast<const char*>(&compacted_entry_count), sizeof(uint32_t));
+
     out.flush();
     out.close();
 

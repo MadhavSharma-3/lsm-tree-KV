@@ -4,6 +4,8 @@
 #include <fstream>
 #include <cstdint>
 #include <mutex>
+#include <memory> 
+#include "bloom.h"
 
 // Forward declaration to avoid circular header dependencies.
 class Skiplist; 
@@ -21,12 +23,15 @@ private:
     std::mutex file_mutex; 
     
     std::vector<IndexEntry> sparse_index;
+    std::unique_ptr<BloomFilter> filter; // Add the filter memory pointer
     void load_index();
+    uint32_t num_entries; 
 
 public:
     SSTable(const std::string& path);
     ~SSTable();
 
+    uint32_t get_entry_count() const; 
     bool get(const std::string& key, std::string& out_value);
 
     static void flush_memtable_to_disk(Skiplist* memtable, const std::string& output_path);
