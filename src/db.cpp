@@ -2,12 +2,13 @@
 #include <iostream>
 #include <queue> 
 #include <filesystem> 
-#include <fstream> // REQUIRED FOR FILE I/O
+#include <fstream> 
 
 using namespace std;
 namespace fs = std::filesystem;
 
 DB::DB(const string& db_directory): db_dir(db_directory), row_cache(50000) {
+    
     // Initialize the underlying data structures
     memtable = make_unique<Skiplist>(16, 0.75f);
     wal = make_unique<WAL>(db_dir + "/wal.bin");
@@ -15,8 +16,8 @@ DB::DB(const string& db_directory): db_dir(db_directory), row_cache(50000) {
     memtable_size = 0; 
     sstable_ct = 0; 
 
+    // look for previous sstables in the db_dir
     while(true){
-        // FIXED: Added missing underscore to match compaction logic
         string ss_path = db_dir + "/sstable_" + to_string(sstable_ct) + ".bin"; 
         ifstream check(ss_path); 
         if (!check.good()) break ; 
@@ -43,28 +44,28 @@ void DB::recover(){
     // This safely checks for EOF before attempting a read.
     while (log_file.peek() != EOF) {
 
-        // 1. Read 1 byte for OpType
+        // Read 1 byte for OpType
         char op_char;
         if (!log_file.read(&op_char, sizeof(char))) break;
         OpType op = static_cast<OpType>(op_char);
 
-        // 2. Read 4 bytes directly into the memory address of key_len
+        // Read 4 bytes directly into the memory address of key_len
         uint32_t key_len;
         if (!log_file.read(reinterpret_cast<char*>(&key_len), sizeof(uint32_t))) break;
 
-        // 3. Pre-allocate string memory, then dump bytes directly into it
+        // Read the key
         string key(key_len, '\0');
         if (!log_file.read(&key[0], key_len)) break;
 
-        // 4. Read 4 bytes for val_len
+        // Read 4 bytes for val_len
         uint32_t val_len;
         if (!log_file.read(reinterpret_cast<char*>(&val_len), sizeof(uint32_t))) break;
 
-        // 5. Pre-allocate string memory, dump value bytes
+        // dump value bytes
         string val(val_len, '\0');
         if (!log_file.read(&val[0], val_len)) break;
 
-        // 6. Rebuild the MemTable state
+        // Rebuild the MemTable state from wal. 
         if (op == OpType::PUT || op == OpType::DELETE) {
             memtable->insert(key, val); 
             memtable_size += key.size() + val.size() + 32; 
@@ -74,14 +75,13 @@ void DB::recover(){
 
 
 void DB::flush_and_reset(){
-    // FIXED: Added missing underscore
     string ss_path = db_dir + "/sstable_" + to_string(sstable_ct) + ".bin"; 
 
     SSTable::flush_memtable_to_disk(memtable.get(), ss_path); 
     sstables.push_back(make_unique<SSTable>(ss_path)); 
     sstable_ct++; 
 
-    // FIX: Actually allocate a new SkipList to drop the old RAM payload
+    // allocate a new SkipList to drop the old RAM payload
     memtable = make_unique<Skiplist>(16, 0.75f);
     memtable_size = 0; 
 
@@ -96,7 +96,7 @@ void DB::flush_and_reset(){
 
 
 void DB::put(const string& key, const string& value) {
-    // 1. Acquire EXCLUSIVE Write Lock.
+
     // No other thread can read or write until this is done.
     unique_lock<shared_mutex> lock(db_mutex);
 
@@ -112,12 +112,11 @@ void DB::put(const string& key, const string& value) {
     row_cache.put(key, value);
 
     // change the memtable size
-    memtable_size += key.size() + value.size() + 32; 
+    memtable_size += key.size() + value.size() + 32; //each key with vector of next[]
 }
 
 
 bool DB::get(const string& key, string& out_value) {
-    // 1. Acquire SHARED Read Lock.
     // Multiple threads can hold this lock simultaneously.
     // But if a thread holds a unique_lock (Write), this will block and wait.
     shared_lock<shared_mutex> lock(db_mutex);
@@ -144,20 +143,19 @@ bool DB::get(const string& key, string& out_value) {
 }
 
 bool DB::remove(const string& key) {
-    // 1. Acquire EXCLUSIVE Write Lock.
+
     unique_lock<shared_mutex> lock(db_mutex);
     
-    // FIX: A key might exist on disk but not in RAM. Bypassing deletion here is an error.
-    // We must unconditionally append the TOMBSTONE to override any potential disk records.
     if (memtable_size > MEMTABLE_LIMIT){
         flush_and_reset(); 
     }
     
-    // 3. Guarantee Durability of Deletion
+    // Fast write mechanics : dont' remove the key, mark it as TOMBSTONE. 
+    // this prevents slow disk access. 
     wal->append(OpType::DELETE, key, "<TOMBSTONE>");
     memtable->insert(key, "<TOMBSTONE>");
 
-    // CACHE MECHANICS: Tombstone Caching (Negative Cache)
+    // CACHE MECHANICS:
     // By storing the tombstone in RAM, subsequent reads will instantly fail at OP GUARD
     // without triggering physical disk scans across SSTables.
     row_cache.put(key, "<TOMBSTONE>");
@@ -176,9 +174,7 @@ struct MergeNode {
     string value;
     int sstable_index;
 
-    // std::priority_queue is a max-heap. 
-    // We invert the operators so the smallest string sits at the top (Min-Heap).
-    // CRITICAL: If keys are identical, we force the HIGHER sstable_index (newer data) to the top.
+    // comparator function for the heap. 
     bool operator<(const MergeNode& other) const {
         if (key == other.key) {
             return sstable_index < other.sstable_index; 
@@ -190,7 +186,6 @@ struct MergeNode {
 
 
 // garbage collector to skim files if sstable_ct >= 4 .
-
 void DB::compact() {
     if (sstables.size() <= 1) return;
     
@@ -198,10 +193,7 @@ void DB::compact() {
 // For structural correctness, we run it synchronously under the write lock.
     cout << "\n[Compaction] Merging " << sstables.size() << " fragmented SSTables. " << endl;
 
-
-// --- PHASE 4 FIX: Precise Bloom Filter Sizing via Trailer Metadata ---
-    // Extract exact physical entry counts from the target SSTable trailers.
-    // This perfectly caps the Bloom Filter RAM allocation without heuristic guesswork.
+// get the exact key count from sstables. 
     uint32_t exact_max_keys = 0;
     for (int i = 0; i < sstable_ct; i++) {
         exact_max_keys += sstables[i]->get_entry_count();
@@ -237,6 +229,7 @@ void DB::compact() {
     string last_key = "";
 
 
+// implementing a k-way merge in sorted linkedlists using a heap. 
     while (!heap.empty()) {
         MergeNode current = heap.top();
         heap.pop();
@@ -247,15 +240,13 @@ void DB::compact() {
             heap.push({next_k, next_v, current.sstable_index});
         }
 
-        // Conflict Resolution: If this key matches the last processed key, it is an older version.
-        // The heap already fed us the newest version first. Drop this obsolete duplicate.
+// The heap already fed us the newest version first. Drop this obsolete duplicate.
 // we only need one last key because we are processing the whole thing in sorted order. 
         if (current.key == last_key) {
             continue;
         }
         last_key = current.key;
 
-        // Garbage Collection: If the reigning version of this key is a Tombstone, 
         // it means the key is deleted. Drop it completely to reclaim disk space.
         if (current.value == "<TOMBSTONE>") {
             continue;
@@ -270,7 +261,7 @@ void DB::compact() {
             bytes_written = 0;
         }
 
-        temp_filter.add(current.key); // Ensure compacted keys hit the filter
+        temp_filter.add(current.key); // add to bloom-filter
 
         uint32_t key_len = current.key.size();
         uint32_t val_len = current.value.size();
@@ -314,7 +305,7 @@ void DB::compact() {
     out.flush();
     out.close();
 
-    // The Atomic Swap: Release memory handles, destroy old fragments, map the new file
+    // Release memory handles, destroy old fragments, map the new file
     sstables.clear();
     iterators.clear();
 

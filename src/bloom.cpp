@@ -7,6 +7,7 @@ using namespace std;
 
 
 BloomFilter::BloomFilter(uint32_t expected_items, double false_positive_rate) {
+    expected_items = max(expected_items, 1u); 
     // Optimal bit array size: m = -(n * ln(p)) / (ln(2)^2)
     num_bits = static_cast<uint32_t>(ceil(-(expected_items * log(false_positive_rate)) / 0.480453013918201));
     
@@ -49,6 +50,7 @@ vector<uint32_t> BloomFilter::hash(const string& key) const {
 
 void BloomFilter::add(const string& key) {
     vector<uint32_t> hashes = hash(key);
+    // mark all the bits that hash into. 
     for (uint32_t h : hashes) {
         uint32_t byte_idx = h / 8;
         uint32_t bit_idx = h % 8;
@@ -56,6 +58,11 @@ void BloomFilter::add(const string& key) {
     }
 }
 
+// educational information  : 
+// If you make an array of 1000 bools, you are burning 1000 bytes to store 1000 bits of information. That is a 800% memory waste.
+// You might think std::vector<bool> fixes this. It doesn't. std::vector<bool> is notoriously broken in C++
+//  because the standard library tries to auto-compress the bits, returning weird proxy objects instead 
+//  of actual references, which destroys performance and prevents direct memory mapping.
 
 
 bool BloomFilter::possibly_contains(const string& key) const {

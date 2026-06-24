@@ -13,6 +13,7 @@ int Skiplist:: randomLevel() {
     static random_device rd;  
     static mt19937 gen(rd()); 
     uniform_real_distribution<float> dist(0.0f, 1.0f);
+    // gives a uniform distribution 
 
     int lvl = 0;
     while (dist(gen) < probability && lvl < max_level) {
@@ -98,8 +99,6 @@ void Skiplist::insert(const string& key, const string& value){
 bool Skiplist::remove(const string& key){
     Node* h = head; 
 
-    // Pre-allocate the update array to align index with level.
-    // update[i] will store the pointer to the node that precedes the insertion spot at level i.
     vector<Node*> update(1 + max_level, nullptr); 
 
     for(int lvl = current_level; lvl >= 0; lvl--){
@@ -122,7 +121,7 @@ bool Skiplist::remove(const string& key){
         update[i] -> next[i] = h -> next[i]; 
     }
 
-    delete h; 
+    delete h; //no memory leak. 
 
     while (current_level > 0 && head->next[current_level] == nullptr) {
         current_level--;

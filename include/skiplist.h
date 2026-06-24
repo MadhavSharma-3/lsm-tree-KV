@@ -2,15 +2,14 @@
 #include <string>
 #include <vector>
 
-// dont do this :0
+// dont do this, because it links a heavy file 
 // using namespace std; 
 
-// The foundational block of your MemTable.
 struct Node {
     std::string key;
     std::string value;
     
-    std::vector<Node*> next;
+    std::vector<Node*> next; //stores the pointers to next (max_level) nodes.
 
     Node(std::string k, std::string v, int size);
 };
@@ -18,7 +17,7 @@ struct Node {
 class Skiplist {
 private:
     int max_level;
-    float probability;
+    float probability; 
     int current_level;
     
     

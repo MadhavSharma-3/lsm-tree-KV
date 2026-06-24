@@ -9,10 +9,13 @@
 // tellp : tells the writing point. 
 // seekp : chnages the writing point. (seek put)
 
+// SStables stored in this way : [memtable] [index_table] [bloom-filter] [offset-trailer].
+
 using namespace std;
 
 void SSTable:: load_index(){
-    // 8-byte trailer reading: [bloom_offset (4 bytes)] [index_offset (4 bytes)] [total entires cnt]
+
+// 12-byte trailer reading: [bloom_offset (4 bytes)] [index_offset (4 bytes)] [total entires cnt (4 bytes)]
     table_file.seekg(-12, ios::end); 
 
     uint32_t index_offset, bloom_offset; 
@@ -71,6 +74,7 @@ SSTable:: ~SSTable(){
 }; 
 
 uint32_t SSTable::get_entry_count() const {
+    // required for garbage collection to calculate the approx file size. 
     return num_entries;
 }; 
 
@@ -89,7 +93,7 @@ bool SSTable:: get(const string& target_key, string& out_value){
             return a.key < b; 
         }); 
     
-    // sparse out of bound handling
+    // sparse_index out of bound handling
     if (it != sparse_index.begin() && (it == sparse_index.end() || it->key > target_key)) {
         --it;
     }
@@ -97,11 +101,12 @@ bool SSTable:: get(const string& target_key, string& out_value){
 
 
     std::lock_guard<std::mutex> lock(file_mutex);
-// Clear any lingering error/EOF flags from previous thread operations
+
+    // Clear any lingering error/EOF flags from previous thread operations
     table_file.clear(); 
     table_file.seekg(it->offset, ios::beg);       
 
-    // iterate over the file until we hit that key 
+    // iterate over the file until we hit that key
     while(true){
         uint32_t key_len; 
         if (!table_file.read(reinterpret_cast<char*>(&key_len), sizeof(uint32_t))) return false; 
@@ -176,7 +181,7 @@ void SSTable::flush_memtable_to_disk(Skiplist* memtable, const string& output_pa
 
 
 
-// append the sparse index to eof 
+// append the sparse index 
     uint32_t index_start_offset = out.tellp();
 
     for (const auto& entry : temp_index) {
@@ -199,7 +204,7 @@ void SSTable::flush_memtable_to_disk(Skiplist* memtable, const string& output_pa
     out.write(reinterpret_cast<const char*>(raw_data.data()), data_size);
 
 
-// append the 8Byte trailer for sparse-index-table lookup
+// append the 12Byte trailer
     out.write(reinterpret_cast<const char*>(&bloom_start_offset), sizeof(uint32_t)); 
     out.write(reinterpret_cast<const char*>(&index_start_offset), sizeof(uint32_t));
     out.write(reinterpret_cast<const char*>(&entry_count), sizeof(uint32_t));
@@ -244,7 +249,7 @@ bool SSTableIterator::has_next() {
 bool SSTableIterator::next(string& out_key, string& out_val) {
     if (!has_next()) return false;
 
-    // Strict boundaries. If a read fails, the disk file is corrupted or truncated.
+    // Strict boundaries. If a read fails, the disk file is corrupted or truncated. 
     uint32_t key_len;
     if (!stream.read(reinterpret_cast<char*>(&key_len), sizeof(uint32_t))) return false;
 

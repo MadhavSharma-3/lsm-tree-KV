@@ -20,7 +20,6 @@ private:
     std::unordered_map<std::string, std::list<std::pair<std::string, std::string>>::iterator> map;
     
     // Dedicated mutex for cache thread safety. 
-    // This lock is held for mere microseconds (RAM-only), preventing disk I/O stalls.
     std::mutex cache_mutex;
 
 public:

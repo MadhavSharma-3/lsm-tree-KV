@@ -147,3 +147,188 @@ int main() {
     delete db;
     return 0;
 }
+
+
+
+// Comparison (YCSB Zipfian)...
+
+
+
+// ===========================================
+
+//  TARGET: StrataKV (Custom Engine)
+
+// ===========================================
+
+// [*] Phase 0: Bulk Loading 200000 records...
+
+// --- Bulk Load (100% Sequential Write) ---
+
+// Time: 6193 ms
+
+// Throughput: 32294.5 ops/sec
+
+// ---------------------------------
+
+
+
+// [*] Executing Workload A (50/50 Mixed - Zipfian)...
+
+
+
+// [Compaction] Merging 4 fragmented SSTables. 
+
+// [Compaction] Complete. Deleted keys dropped. Disk space reclaimed.
+
+// --- Workload A (50/50 Mixed - Zipfian) ---
+
+// Time: 4423 ms
+
+// Throughput: 45218.2 ops/sec
+
+// ---------------------------------
+
+
+
+// [*] Executing Workload B (95/5 Read-Heavy - Zipfian)...
+
+// --- Workload B (95/5 Read-Heavy - Zipfian) ---
+
+// Time: 1228 ms
+
+// Throughput: 162866 ops/sec
+
+// ---------------------------------
+
+
+
+// [*] Executing Workload C (100% Read - Zipfian)...
+
+// --- Workload C (100% Read - Zipfian) ---
+
+// Time: 564 ms
+
+// Throughput: 354610 ops/sec
+
+// ---------------------------------
+
+
+
+// ===========================================
+
+//  TARGET: LevelDB (Google)
+
+// ===========================================
+
+// [*] Phase 0: Bulk Loading 200000 records...
+
+// --- Bulk Load (100% Sequential Write) ---
+
+// Time: 2527 ms
+
+// Throughput: 79145.2 ops/sec
+
+// ---------------------------------
+
+
+
+// [*] Executing Workload A (50/50 Mixed - Zipfian)...
+
+// --- Workload A (50/50 Mixed - Zipfian) ---
+
+// Time: 2034 ms
+
+// Throughput: 98328.4 ops/sec
+
+// ---------------------------------
+
+
+
+// [*] Executing Workload B (95/5 Read-Heavy - Zipfian)...
+
+// --- Workload B (95/5 Read-Heavy - Zipfian) ---
+
+// Time: 619 ms
+
+// Throughput: 323102 ops/sec
+
+// ---------------------------------
+
+
+
+// [*] Executing Workload C (100% Read - Zipfian)...
+
+// --- Workload C (100% Read - Zipfian) ---
+
+// Time: 634 ms
+
+// Throughput: 315457 ops/sec
+
+// ---------------------------------
+
+
+
+
+
+
+
+
+
+// Initializing Embedded C++ Architecture Comparison (Uniform Random)...
+
+// ===========================================
+//  TARGET: StrataKV (Custom Engine)
+// ===========================================
+// [*] Phase 0: Bulk Loading 200000 records...
+// --- Bulk Load (100% Sequential Write) ---
+// Time: 6682 ms
+// Throughput: 29931.2 ops/sec
+// ---------------------------------
+
+// [*] Executing Workload A (50/50 Mixed - Uniform)...
+
+// [Compaction] Merging 4 fragmented SSTables. 
+// [Compaction] Complete. Deleted keys dropped. Disk space reclaimed.
+// --- Workload A (50/50 Mixed - Uniform) ---
+// Time: 6900 ms
+// Throughput: 28985.5 ops/sec
+// ---------------------------------
+
+// [*] Executing Workload B (95/5 Read-Heavy - Uniform)...
+// --- Workload B (95/5 Read-Heavy - Uniform) ---
+// Time: 4327 ms
+// Throughput: 46221.4 ops/sec
+// ---------------------------------
+
+// [*] Executing Workload C (100% Read - Uniform)...
+// --- Workload C (100% Read - Uniform) ---
+// Time: 3756 ms
+// Throughput: 53248.1 ops/sec
+// ---------------------------------
+
+// ===========================================
+//  TARGET: LevelDB (Google)
+// ===========================================
+// [*] Phase 0: Bulk Loading 200000 records...
+// --- Bulk Load (100% Sequential Write) ---
+// Time: 2597 ms
+// Throughput: 77011.9 ops/sec
+// ---------------------------------
+
+// [*] Executing Workload A (50/50 Mixed - Uniform)...
+// --- Workload A (50/50 Mixed - Uniform) ---
+// Time: 1961 ms
+// Throughput: 101989 ops/sec
+// ---------------------------------
+
+// [*] Executing Workload B (95/5 Read-Heavy - Uniform)...
+// --- Workload B (95/5 Read-Heavy - Uniform) ---
+// Time: 508 ms
+// Throughput: 393701 ops/sec
+// ---------------------------------
+
+// [*] Executing Workload C (100% Read - Uniform)...
+// --- Workload C (100% Read - Uniform) ---
+// Time: 276 ms
+// Throughput: 724638 ops/sec
+// ---------------------------------

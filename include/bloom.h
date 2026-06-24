@@ -5,7 +5,7 @@
 
 class BloomFilter {
 private:
-    std::vector<uint8_t> bit_array;
+    std::vector<uint8_t> bit_array; 
     uint32_t num_bits;
     uint32_t num_hashes;
 

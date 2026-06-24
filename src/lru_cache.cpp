@@ -45,6 +45,8 @@ void LRUCache::put(const string& key, const string& value) {
     map[key] = items.begin();
 }
 
+
+// non used functions
 void LRUCache::invalidate(const string& key) {
     lock_guard<mutex> lock(cache_mutex);
     auto it = map.find(key);
