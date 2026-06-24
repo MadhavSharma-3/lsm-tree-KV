@@ -7,7 +7,7 @@
 using namespace std;
 namespace fs = std::filesystem;
 
-DB::DB(const string& db_directory): db_dir(db_directory) {
+DB::DB(const string& db_directory): db_dir(db_directory), row_cache(50000) {
     // Initialize the underlying data structures
     memtable = make_unique<Skiplist>(16, 0.75f);
     wal = make_unique<WAL>(db_dir + "/wal.bin");
@@ -107,6 +107,10 @@ void DB::put(const string& key, const string& value) {
     wal->append(OpType::PUT, key, value);
     memtable->insert(key, value);
     
+    // CACHE MECHANICS: We update the cache with the live value instead of invalidating.
+    // When the MemTable flushes, this guarantees the cache already has the hottest data.
+    row_cache.put(key, value);
+
     // change the memtable size
     memtable_size += key.size() + value.size() + 32; 
 }
@@ -123,8 +127,15 @@ bool DB::get(const string& key, string& out_value) {
         return out_value != "<TOMBSTONE>"; 
     }
 
+    // OP GUARD : User-Space LRU Cache Lookup (Zero Syscalls, cached disk state)
+    if (row_cache.get(key, out_value)) {
+        return out_value != "<TOMBSTONE>";
+    }
+
     for(int i = sstable_ct-1; i >= 0; i--){
         if (sstables[i]->get(key, out_value)) {
+            // CACHE MECHANICS: On a successful disk fetch, pull the data into user-space RAM.
+            row_cache.put(key, out_value);
             return out_value != "<TOMBSTONE>";
         }
     }
@@ -136,9 +147,6 @@ bool DB::remove(const string& key) {
     // 1. Acquire EXCLUSIVE Write Lock.
     unique_lock<shared_mutex> lock(db_mutex);
     
-    // 2. Check if it actually exists in memory before appending a useless delete log
-    string temp;
-    
     // FIX: A key might exist on disk but not in RAM. Bypassing deletion here is an error.
     // We must unconditionally append the TOMBSTONE to override any potential disk records.
     if (memtable_size > MEMTABLE_LIMIT){
@@ -148,6 +156,12 @@ bool DB::remove(const string& key) {
     // 3. Guarantee Durability of Deletion
     wal->append(OpType::DELETE, key, "<TOMBSTONE>");
     memtable->insert(key, "<TOMBSTONE>");
+
+    // CACHE MECHANICS: Tombstone Caching (Negative Cache)
+    // By storing the tombstone in RAM, subsequent reads will instantly fail at OP GUARD
+    // without triggering physical disk scans across SSTables.
+    row_cache.put(key, "<TOMBSTONE>");
+
     memtable_size += key.size() + 11 + 32; // 11 is the size of "<TOMBSTONE>"
     
     return true; 
@@ -192,7 +206,7 @@ void DB::compact() {
     for (int i = 0; i < sstable_ct; i++) {
         exact_max_keys += sstables[i]->get_entry_count();
     }
-
+    exact_max_keys = max(1u, exact_max_keys); 
 
     vector<unique_ptr<SSTableIterator>> iterators;
     for (int i = 0; i < sstable_ct; i++) {
@@ -314,3 +328,128 @@ void DB::compact() {
     
     cout << "[Compaction] Complete. Deleted keys dropped. Disk space reclaimed." << endl;
 }
+
+
+
+// ===========================================
+//  TARGET: StrataKV (Custom Engine)
+// ===========================================
+// [*] Phase 0: Bulk Loading 200000 records...
+// --- Bulk Load (100% Write) ---
+// Time: 5310 ms
+// Throughput: 37664.8 ops/sec
+// ---------------------------------
+
+// [*] Executing Workload A (50/50 Mixed)...
+
+// [Compaction] Merging 4 fragmented SSTables. 
+// [Compaction] Complete. Deleted keys dropped. Disk space reclaimed.
+// --- Workload A (50/50 Mixed) ---
+// Time: 5989 ms
+// Throughput: 33394.6 ops/sec
+// ---------------------------------
+
+// [*] Executing Workload B (95/5 Read-Heavy)...
+// --- Workload B (95/5 Read-Heavy) ---
+// Time: 4268 ms
+// Throughput: 46860.4 ops/sec
+// ---------------------------------
+
+// [*] Executing Workload C (100% Read)...
+// --- Workload C (100% Read) ---
+// Time: 3242 ms
+// Throughput: 61690.3 ops/sec
+// ---------------------------------
+
+// ===========================================
+//  TARGET: LevelDB (Google)
+// ===========================================
+// [*] Phase 0: Bulk Loading 200000 records...
+// --- Bulk Load (100% Write) ---
+// Time: 2437 ms
+// Throughput: 82068.1 ops/sec
+// ---------------------------------
+
+// [*] Executing Workload A (50/50 Mixed)...
+// --- Workload A (50/50 Mixed) ---
+// Time: 2059 ms
+// Throughput: 97134.5 ops/sec
+// ---------------------------------
+
+// [*] Executing Workload B (95/5 Read-Heavy)...
+// --- Workload B (95/5 Read-Heavy) ---
+// Time: 706 ms
+// Throughput: 283286 ops/sec
+// ---------------------------------
+
+// [*] Executing Workload C (100% Read)...
+// --- Workload C (100% Read) ---
+// Time: 306 ms
+// Throughput: 653595 ops/sec
+// ---------------------------------
+
+
+
+
+// Initializing Embedded C++ Architecture Comparison (YCSB Zipfian)...
+
+// ===========================================
+//  TARGET: StrataKV (Custom Engine)
+// ===========================================
+// [*] Phase 0: Bulk Loading 200000 records...
+// --- Bulk Load (100% Sequential Write) ---
+// Time: 5328 ms
+// Throughput: 37537.5 ops/sec
+// ---------------------------------
+
+// [*] Executing Workload A (50/50 Mixed - Zipfian)...
+
+// [Compaction] Merging 4 fragmented SSTables. 
+// [Compaction] Complete. Deleted keys dropped. Disk space reclaimed.
+// --- Workload A (50/50 Mixed - Zipfian) ---
+// Time: 4446 ms
+// Throughput: 44984.3 ops/sec
+// ---------------------------------
+
+// [*] Executing Workload B (95/5 Read-Heavy - Zipfian)...
+// --- Workload B (95/5 Read-Heavy - Zipfian) ---
+// Time: 2100 ms
+// Throughput: 95238.1 ops/sec
+// ---------------------------------
+
+// [*] Executing Workload C (100% Read - Zipfian)...
+// --- Workload C (100% Read - Zipfian) ---
+// Time: 1083 ms
+// Throughput: 184672 ops/sec
+// ---------------------------------
+
+// ===========================================
+//  TARGET: LevelDB (Google)
+// ===========================================
+// [*] Phase 0: Bulk Loading 200000 records...
+// --- Bulk Load (100% Sequential Write) ---
+// Time: 2657 ms
+// Throughput: 75272.9 ops/sec
+// ---------------------------------
+
+// [*] Executing Workload A (50/50 Mixed - Zipfian)...
+// --- Workload A (50/50 Mixed - Zipfian) ---
+// Time: 2451 ms
+// Throughput: 81599.3 ops/sec
+// ---------------------------------
+
+// [*] Executing Workload B (95/5 Read-Heavy - Zipfian)...
+// --- Workload B (95/5 Read-Heavy - Zipfian) ---
+// Time: 444 ms
+// Throughput: 450450 ops/sec
+// ---------------------------------
+
+// [*] Executing Workload C (100% Read - Zipfian)...
+// --- Workload C (100% Read - Zipfian) ---
+// Time: 310 ms
+// Throughput: 645161 ops/sec
+// ---------------------------------
+
+
+
+// with cache ; 

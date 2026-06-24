@@ -8,8 +8,8 @@ import random
 
 # --- Configuration ---
 SEED_RECORDS = 100000    # Massive initial dataset to bloat the disk
-NUM_THREADS = 8
-OPS_PER_THREAD = 5000    # 40,000 total interleaved operations
+NUM_THREADS = 1
+OPS_PER_THREAD = 45000    # 40,000 total interleaved operations
 HOST = '127.0.0.1'
 PORT = 8080
 DB_PATH = "mixed_baseline.db"
@@ -185,3 +185,23 @@ if __name__ == "__main__":
         os.remove(DB_PATH)
         for ext in ['-wal', '-journal', '-shm']:
             if os.path.exists(DB_PATH + ext): os.remove(DB_PATH + ext)
+
+
+
+
+# ===========================================
+
+# --- StrataKV (LSM-Tree) Results ---
+# Throughput: 10097.03 ops/sec
+# Avg Latency: 0.78 ms
+# p50 Latency: 0.61 ms
+# p95 Latency: 1.75 ms
+# p99 Latency: 4.13 ms
+
+# --- SQLite3 (B-Tree) Results ---
+# Throughput: 1677.96 ops/sec
+# Avg Latency: 3.89 ms
+# p50 Latency: 0.15 ms
+# p95 Latency: 1.30 ms
+# p99 Latency: 2.10 ms
+# ===========================================

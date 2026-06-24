@@ -10,6 +10,7 @@ find_package(Threads REQUIRED)
 
 # 1. Compile the core database engine into a static library
 add_library(lsm_engine
+    src/lru_cache.cpp
     src/skiplist.cpp
     src/wal.cpp
     src/sstable.cpp

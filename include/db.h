@@ -2,6 +2,7 @@
 #include "skiplist.h"
 #include "wal.h"
 #include "sstable.h"
+#include "lru_cache.h"
 #include <string>
 #include <vector>
 #include <shared_mutex>
@@ -9,11 +10,11 @@
 
 class DB {
 private:
+    // everything is uniq_ptr coz its smart handles destruction on its own. 
     std::unique_ptr<Skiplist> memtable;
     std::unique_ptr<WAL> wal;
-
-    // The registry of all flushed disk files.
     std::vector<std::unique_ptr<SSTable>> sstables;
+    LRUCache row_cache; //cache jr. 
 
     // The Readers-Writer Lock. 
     std::shared_mutex db_mutex;
